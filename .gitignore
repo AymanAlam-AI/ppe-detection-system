@@ -1,0 +1,13 @@
+venv/
+__pycache__/
+*.pyc
+ml_model/runs/
+backend/uploads/
+backend/outputs/
+backend/ppe_database.db
+
+frontend/node_modules/
+frontend/build/
+
+.DS_Store
+Thumbs.db
