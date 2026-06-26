@@ -3,23 +3,18 @@ import { useNavigate } from "react-router-dom";
 import axios from "axios";
 
 const API = "http://localhost:5000/api";
-
-const DETECTION_CLASSES = [
-  { label: "Protective Helmet", type: "safe" },
-  { label: "Worker without helmet", type: "violation" },
-];
-
-const STATUS_LABELS = {
-  pending: "Queued for processing...",
-  processing: "Running detection model on video...",
-  done: "Done. Loading results...",
-  error: "Processing failed.",
-};
-
 const VIDEO_EXTENSIONS = /\.(mp4|avi|mov|mkv|webm)$/i;
 const IMAGE_EXTENSIONS = /\.(jpg|jpeg|png|bmp)$/i;
-const VIDEO_TYPES = ["video/mp4", "video/avi", "video/quicktime", "video/x-matroska", "video/webm"];
-const IMAGE_TYPES = ["image/jpeg", "image/png", "image/bmp"];
+const VIDEO_TYPES = ["video/mp4","video/avi","video/quicktime","video/x-matroska","video/webm"];
+const IMAGE_TYPES = ["image/jpeg","image/png","image/bmp"];
+const STATUS_LABELS = { pending: "Queued for processing", processing: "Running inference engine", done: "Analysis complete", error: "Processing failed" };
+
+const STEPS = [
+  { num: "01", title: "Person detection", desc: "YOLOv8 locates every worker in the frame" },
+  { num: "02", title: "PPE classification", desc: "Checks each person for a safety helmet" },
+  { num: "03", title: "Violation flagging", desc: "Workers without helmet are marked as violations" },
+  { num: "04", title: "Report generation", desc: "Compliance rate, timeline, and annotated output" },
+];
 
 export default function UploadPage() {
   const [file, setFile] = useState(null);
@@ -42,200 +37,141 @@ export default function UploadPage() {
   const selectFile = useCallback((f) => {
     if (!f) return;
     const type = detectFileType(f);
-    if (!type) {
-      setError("Select a valid file: MP4, AVI, MOV, MKV, JPG, or PNG.");
-      return;
-    }
-    setFile(f);
-    setFileType(type);
-    setError(null);
+    if (!type) { setError("Unsupported format. Accepted: MP4, AVI, MOV, MKV, JPG, PNG."); return; }
+    setFile(f); setFileType(type); setError(null);
   }, []);
 
-  const handleDrop = useCallback((e) => {
-    e.preventDefault();
-    setDragOver(false);
-    selectFile(e.dataTransfer.files[0]);
-  }, [selectFile]);
+  const handleDrop = useCallback((e) => { e.preventDefault(); setDragOver(false); selectFile(e.dataTransfer.files[0]); }, [selectFile]);
 
   const handleUpload = async () => {
     if (!file) return;
-    setUploading(true);
-    setError(null);
-
+    setUploading(true); setError(null);
     const formData = new FormData();
-
     if (fileType === "video") {
       formData.append("video", file);
       try {
-        const res = await axios.post(`${API}/upload/video`, formData, {
-          headers: { "Content-Type": "multipart/form-data" },
-          onUploadProgress: (e) => setUploadProgress(Math.round((e.loaded / e.total) * 100)),
-        });
+        const res = await axios.post(`${API}/upload/video`, formData, { headers: { "Content-Type": "multipart/form-data" }, onUploadProgress: (e) => setUploadProgress(Math.round((e.loaded / e.total) * 100)) });
         setProcessingStatus("processing");
-        startPolling(res.data.video_id);
-      } catch (err) {
-        setError(err.response?.data?.error ?? "Upload failed. Make sure the backend is running.");
-        setUploading(false);
-      }
+        pollRef.current = setInterval(async () => {
+          try {
+            const r = await axios.get(`${API}/video/${res.data.video_id}/status`);
+            setProcessingStatus(r.data.status);
+            if (r.data.status === "done") { clearInterval(pollRef.current); setUploading(false); setTimeout(() => navigate(`/analysis/${res.data.video_id}`), 600); }
+            else if (r.data.status === "error") { clearInterval(pollRef.current); setUploading(false); setError("Inference engine failed to process this file."); }
+          } catch { clearInterval(pollRef.current); }
+        }, 2500);
+      } catch (err) { setError(err.response?.data?.error ?? "Upload failed."); setUploading(false); }
     } else {
       formData.append("image", file);
       try {
-        setUploadProgress(100);
-        setProcessingStatus("processing");
-        const res = await axios.post(`${API}/upload/image`, formData, {
-          headers: { "Content-Type": "multipart/form-data" },
-          onUploadProgress: (e) => setUploadProgress(Math.round((e.loaded / e.total) * 100)),
-        });
+        setUploadProgress(100); setProcessingStatus("processing");
+        const res = await axios.post(`${API}/upload/image`, formData, { headers: { "Content-Type": "multipart/form-data" } });
         setProcessingStatus("done");
         setTimeout(() => navigate(`/analysis/${res.data.image_id}`), 600);
-      } catch (err) {
-        setError(err.response?.data?.error ?? "Upload failed. Make sure the backend is running.");
-        setUploading(false);
-      }
+      } catch (err) { setError(err.response?.data?.error ?? "Upload failed."); setUploading(false); }
     }
   };
 
-  const startPolling = (videoId) => {
-    pollRef.current = setInterval(async () => {
-      try {
-        const res = await axios.get(`${API}/video/${videoId}/status`);
-        setProcessingStatus(res.data.status);
-        if (res.data.status === "done") {
-          clearInterval(pollRef.current);
-          setUploading(false);
-          setTimeout(() => navigate(`/analysis/${videoId}`), 800);
-        } else if (res.data.status === "error") {
-          clearInterval(pollRef.current);
-          setUploading(false);
-          setError("The model failed to process this video.");
-        }
-      } catch {
-        clearInterval(pollRef.current);
-      }
-    }, 2500);
-  };
-
-  const resetState = () => {
-    setFile(null);
-    setFileType(null);
-    setError(null);
-    setUploadProgress(0);
-    setProcessingStatus(null);
-    setUploading(false);
-    if (pollRef.current) clearInterval(pollRef.current);
-  };
+  const reset = () => { setFile(null); setFileType(null); setError(null); setUploadProgress(0); setProcessingStatus(null); setUploading(false); if (pollRef.current) clearInterval(pollRef.current); };
 
   return (
-    <div className="max-w-xl mx-auto space-y-8">
+    <div style={{ maxWidth: "640px", margin: "0 auto", display: "flex", flexDirection: "column", gap: "32px" }}>
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">New analysis</h1>
-        <p className="text-zinc-500 text-sm mt-1">
-          Upload a video or image to detect PPE compliance with the trained model.
-        </p>
+        <p style={{ fontFamily: "JetBrains Mono, monospace", fontSize: "10px", color: "#F0A500", textTransform: "uppercase", letterSpacing: "0.15em", margin: "0 0 8px" }}>Inference Pipeline</p>
+        <h1 style={{ fontFamily: "Inter, sans-serif", fontSize: "32px", fontWeight: 800, color: "#E6EDF3", margin: "0 0 8px", letterSpacing: "-0.02em" }}>Submit Media for Analysis</h1>
+        <p style={{ fontFamily: "Inter, sans-serif", fontSize: "14px", color: "#7D8590", margin: 0, lineHeight: 1.6 }}>Upload a video or image. The model detects every worker and flags those without safety helmets.</p>
       </div>
 
       <div
-        className={`relative overflow-hidden border-2 border-dashed rounded-2xl p-10 text-center cursor-pointer transition-all select-none
-          ${dragOver ? "border-amber-500 bg-amber-500/5 scale-[1.01]" : "border-zinc-700 hover:border-zinc-500"}
-          ${file ? "border-emerald-500/50 bg-emerald-500/5 cursor-default" : ""}
-          ${uploading ? "pointer-events-none opacity-70" : ""}`}
+        onClick={() => !file && !uploading && fileInputRef.current.click()}
         onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
         onDragLeave={() => setDragOver(false)}
         onDrop={handleDrop}
-        onClick={() => !file && !uploading && fileInputRef.current.click()}
-        role="button"
-        tabIndex={0}
-        onKeyDown={(e) => e.key === "Enter" && !file && fileInputRef.current.click()}
+        style={{
+          border: `2px dashed ${dragOver ? "#F0A500" : file ? "rgba(63,185,80,0.4)" : "#21262D"}`,
+          borderRadius: "12px", padding: "56px 40px", textAlign: "center",
+          cursor: file || uploading ? "default" : "pointer",
+          backgroundColor: dragOver ? "rgba(240,165,0,0.04)" : file ? "rgba(63,185,80,0.04)" : "#0D1117",
+          transition: "all 0.2s",
+          pointerEvents: uploading ? "none" : "auto",
+          opacity: uploading ? 0.7 : 1,
+        }}
       >
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="video/*,image/*"
-          className="hidden"
-          onChange={(e) => selectFile(e.target.files[0])}
-        />
+        <input ref={fileInputRef} type="file" accept="video/*,image/*" style={{ display: "none" }} onChange={(e) => selectFile(e.target.files[0])} />
         {file ? (
-          <div className="space-y-2">
-            <div className="text-5xl">{fileType === "video" ? "🎞️" : "🖼️"}</div>
-            <p className="text-emerald-400 font-semibold">{file.name}</p>
-            <p className="text-zinc-500 text-sm">
-              {(file.size / 1024 / 1024).toFixed(1)} MB · {fileType}
-            </p>
-            {!uploading && (
-              <button
-                onClick={(e) => { e.stopPropagation(); resetState(); }}
-                className="mt-1 text-xs text-zinc-500 hover:text-red-400 transition-colors"
-              >
-                Remove
-              </button>
-            )}
+          <div>
+            <p style={{ fontFamily: "JetBrains Mono, monospace", fontSize: "9px", color: "#3FB950", textTransform: "uppercase", letterSpacing: "0.15em", margin: "0 0 12px" }}>File ready</p>
+            <p style={{ fontFamily: "Inter, sans-serif", fontSize: "16px", fontWeight: 600, color: "#E6EDF3", margin: "0 0 4px" }}>{file.name}</p>
+            <p style={{ fontFamily: "JetBrains Mono, monospace", fontSize: "11px", color: "#7D8590", margin: "0 0 16px" }}>{(file.size / 1024 / 1024).toFixed(2)} MB · {fileType?.toUpperCase()}</p>
+            {!uploading && <button onClick={(e) => { e.stopPropagation(); reset(); }} style={{ fontFamily: "JetBrains Mono, monospace", fontSize: "10px", color: "#7D8590", background: "none", border: "none", cursor: "pointer", textTransform: "uppercase", letterSpacing: "0.1em" }}>Remove</button>}
           </div>
         ) : (
-          <div className="space-y-2">
-            <div className="text-5xl">📂</div>
-            <p className="text-zinc-300 font-semibold">Drop file here</p>
-            <p className="text-zinc-600 text-sm">Video: MP4, AVI, MOV, MKV · Image: JPG, PNG</p>
+          <div>
+            <div style={{ width: "48px", height: "48px", border: "1px solid #21262D", borderRadius: "10px", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 20px" }}>
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                <path d="M10 2v12M6 5l4-3 4 3" stroke="#7D8590" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                <path d="M2 15v3h16v-3" stroke="#7D8590" strokeWidth="1.5" strokeLinecap="round"/>
+              </svg>
+            </div>
+            <p style={{ fontFamily: "Inter, sans-serif", fontSize: "15px", fontWeight: 600, color: "#E6EDF3", margin: "0 0 8px" }}>Drop file here or click to browse</p>
+            <p style={{ fontFamily: "JetBrains Mono, monospace", fontSize: "10px", color: "#7D8590", textTransform: "uppercase", letterSpacing: "0.1em", margin: 0 }}>Video: MP4 AVI MOV MKV · Image: JPG PNG</p>
           </div>
         )}
       </div>
 
       {error && (
-        <div className="bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 text-red-400 text-sm">
-          {error}
+        <div style={{ border: "1px solid rgba(218,54,51,0.3)", backgroundColor: "rgba(218,54,51,0.06)", borderRadius: "8px", padding: "12px 16px" }}>
+          <p style={{ fontFamily: "JetBrains Mono, monospace", fontSize: "12px", color: "#DA3633", margin: 0 }}>{error}</p>
         </div>
       )}
 
       {file && !uploading && (
         <button
           onClick={handleUpload}
-          className="w-full bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-zinc-950 font-bold py-3.5 rounded-xl transition-all text-sm shadow-lg shadow-amber-500/20 hover:shadow-amber-500/30 hover:-translate-y-0.5"
-        >
-          Run analysis
-        </button>
+          style={{ width: "100%", backgroundColor: "#F0A500", color: "#080C10", fontFamily: "JetBrains Mono, monospace", fontSize: "12px", fontWeight: 700, border: "none", cursor: "pointer", padding: "16px", borderRadius: "8px", textTransform: "uppercase", letterSpacing: "0.12em", transition: "background-color 0.2s" }}
+          onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "#D4920A"}
+          onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "#F0A500"}
+        >Run Analysis</button>
       )}
 
       {uploading && (
-        <div className="bg-zinc-900/80 border border-zinc-800 rounded-2xl p-5 space-y-4">
+        <div style={{ border: "1px solid #21262D", borderRadius: "8px", padding: "20px", backgroundColor: "#0D1117" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "12px" }}>
+            <p style={{ fontFamily: "JetBrains Mono, monospace", fontSize: "10px", color: "#7D8590", textTransform: "uppercase", letterSpacing: "0.1em", margin: 0 }}>
+              {uploadProgress < 100 ? "Uploading" : STATUS_LABELS[processingStatus] ?? "Processing"}
+            </p>
+            {uploadProgress < 100 && <p style={{ fontFamily: "JetBrains Mono, monospace", fontSize: "11px", color: "#E6EDF3", margin: 0 }}>{uploadProgress}%</p>}
+          </div>
           {uploadProgress < 100 ? (
-            <>
-              <div className="flex justify-between text-sm">
-                <span className="text-zinc-400">Uploading...</span>
-                <span className="text-zinc-300 tabular-nums">{uploadProgress}%</span>
-              </div>
-              <div className="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
-                <div
-                  className="bg-gradient-to-r from-amber-500 to-orange-500 h-1.5 rounded-full transition-all duration-200"
-                  style={{ width: `${uploadProgress}%` }}
-                />
-              </div>
-            </>
+            <div style={{ width: "100%", height: "2px", backgroundColor: "#21262D", borderRadius: "1px", overflow: "hidden" }}>
+              <div style={{ height: "100%", backgroundColor: "#F0A500", width: `${uploadProgress}%`, transition: "width 0.3s" }} />
+            </div>
           ) : (
-            <div className="flex items-center gap-3">
-              <div className="w-5 h-5 border-2 border-amber-500 border-t-transparent rounded-full animate-spin shrink-0" />
-              <p className="text-zinc-300 text-sm">
-                {fileType === "image" ? "Running detection model on image..." : STATUS_LABELS[processingStatus] ?? "Processing..."}
+            <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+              <div style={{ width: "16px", height: "16px", border: "2px solid #F0A500", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 0.8s linear infinite", flexShrink: 0 }} />
+              <p style={{ fontFamily: "JetBrains Mono, monospace", fontSize: "11px", color: "#7D8590", margin: 0 }}>
+                {fileType === "image" ? "Detecting workers and PPE..." : STATUS_LABELS[processingStatus] ?? "Processing..."}
               </p>
             </div>
           )}
         </div>
       )}
 
-      <div className="bg-zinc-900/80 border border-zinc-800 rounded-2xl p-5">
-        <p className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-1">
-          How it works
-        </p>
-        <p className="text-zinc-500 text-xs mb-4">
-          The model detects every worker, then checks if a safety helmet is present.
-        </p>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-          {DETECTION_CLASSES.map(({ label, type }) => (
-            <div key={label} className="flex items-center gap-2 text-sm text-zinc-400">
-              <span className={`w-2 h-2 rounded-full shrink-0 ${type === "safe" ? "bg-emerald-500" : "bg-red-500"}`} />
-              {label}
+      <div style={{ border: "1px solid #21262D", borderRadius: "12px", padding: "28px", backgroundColor: "#0D1117" }}>
+        <p style={{ fontFamily: "JetBrains Mono, monospace", fontSize: "9px", color: "#F0A500", textTransform: "uppercase", letterSpacing: "0.15em", margin: "0 0 20px" }}>Detection Pipeline</p>
+        <div>
+          {STEPS.map(({ num, title, desc }, i) => (
+            <div key={num} style={{ display: "flex", gap: "20px", paddingBottom: i < STEPS.length - 1 ? "20px" : 0, marginBottom: i < STEPS.length - 1 ? "20px" : 0, borderBottom: i < STEPS.length - 1 ? "1px solid #21262D" : "none" }}>
+              <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: "10px", color: "#F0A500", flexShrink: 0, marginTop: "2px" }}>{num}</span>
+              <div>
+                <p style={{ fontFamily: "Inter, sans-serif", fontSize: "13px", fontWeight: 600, color: "#E6EDF3", margin: "0 0 4px" }}>{title}</p>
+                <p style={{ fontFamily: "Inter, sans-serif", fontSize: "12px", color: "#7D8590", margin: 0, lineHeight: 1.5 }}>{desc}</p>
+              </div>
             </div>
           ))}
         </div>
       </div>
+      <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
     </div>
   );
 }
