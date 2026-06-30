@@ -11,3 +11,8 @@ frontend/build/
 
 .DS_Store
 Thumbs.db
+
+backend/live_uploads/
+backend/uploads/
+backend/outputs/
+*.db
